@@ -12,12 +12,6 @@ RouteMaster is a high-performance cross-chain route aggregator that finds optima
 - **Concurrent Processing**: Uses goroutines for concurrent quote queries
 - **Error Handling**: Comprehensive error handling and logging mechanisms
 
-## System Requirements
-
-- Go 1.20 or higher
-- MySQL 5.7 or higher
-- Sufficient system memory (recommended 4GB or more)
-
 ## Installation
 
 1. Clone the repository:
@@ -103,57 +97,9 @@ Response includes:
 - `createdAt`: Record creation timestamp
 - `updatedAt`: Record last update timestamp
 
-## Project Structure
-
-```
-RouteMaster/
-├── aggregator/          # Core aggregator logic
-│   ├── quoter/         # Protocol quoter implementations
-│   └── aggregator.go   # Main aggregator logic
-├── clients/            # External service clients
-├── commons/           # Common types and utilities
-├── db/                # Database related code
-├── types/             # Shared type definitions
-└── cmd/               # Command line entry point
-```
-
-## Development Guide
-
-1. Adding New Protocol Support:
-   - Create a new quoter in the `quoter` directory
-   - Implement the `Quoter` interface
-   - Register the new quoter in the `aggregator`
-
-2. Modifying Cache Strategy:
-   - Adjust `QuoteCacheEntry` expiration time
-   - Modify cache cleanup logic
-
-3. Optimizing Segmentation Strategy:
-   - Adjust `segmentPercent` parameter
-   - Modify `generateAmountCombinations` method
-
 ## Testing
 
 Run tests:
 ```bash
 go test ./...
 ```
-
-## Performance Optimization
-
-- Use connection pooling for database connections
-- Implement intelligent caching strategies
-- Optimize concurrent request processing
-- Use indexes to optimize database queries
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## License
-
-MIT License
