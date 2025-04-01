@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: routemaster
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+      - ./docker/mysql/conf.d:/etc/mysql/conf.d
+    command: 
+      - --character-set-server=utf8mb4 
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+8:00
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - routemaster-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: routemaster
+    restart: always
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:test@tcp(mysql:3306)/routemaster?parseTime=true&charset=utf8mb4&loc=Local
+      - TZ=Asia/Shanghai
+      - PRIVATE_NODE_URL=https://eth.merkle.io
+      - LISTEN=:8081
+      - CHAIN_ID=1
+      - SEGMENT_PERCENTAGE=50
+      - PRIVATE_NODE_ENLARGE_FACTOR=1
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - routemaster-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+networks:
+  routemaster-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+    driver: local 
