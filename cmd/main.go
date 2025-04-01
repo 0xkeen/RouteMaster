@@ -102,7 +102,6 @@ func getBackupNodeClients(chainId int64) []*networking.StatefulEthClient {
 			"https://ethereum.publicnode.com",
 			"https://eth.llamarpc.com",
 			"https://ethereum.blockpi.network/v1/rpc/public",
-			"https://rpc.ankr.com/eth",
 		}
 		for _, rpcUrl := range freeRpcs {
 			if freeNodeClient, err := networking.Dial(rpcUrl); err == nil {

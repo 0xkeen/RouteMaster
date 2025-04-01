@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common/hexutil"
-
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/sony/gobreaker"
 
 	"route_master/aggregator/quoter"
 	"route_master/commons"
@@ -21,12 +21,26 @@ type Aggregator struct {
 	segmentPercent int64
 	quoteCache     map[string]map[string]*quoter.QuoteCacheEntry
 	cacheMutex     sync.Mutex
+	breakers       map[string]*gobreaker.CircuitBreaker
 }
 
 func NewAggregator(quoters []quoter.Quoter, segmentPercentage int64) *Aggregator {
 	quoteCache := make(map[string]map[string]*quoter.QuoteCacheEntry)
+	breakers := make(map[string]*gobreaker.CircuitBreaker)
+
 	for _, q := range quoters {
-		quoteCache[q.String()] = make(map[string]*quoter.QuoteCacheEntry)
+		quoterName := q.String()
+		quoteCache[quoterName] = make(map[string]*quoter.QuoteCacheEntry)
+
+		settings := gobreaker.Settings{
+			Name:     fmt.Sprintf("quoter:%s", quoterName),
+			Timeout:  2 * time.Second,
+			Interval: 2 * time.Second,
+			ReadyToTrip: func(counts gobreaker.Counts) bool {
+				return counts.ConsecutiveFailures >= 3
+			},
+		}
+		breakers[quoterName] = gobreaker.NewCircuitBreaker(settings)
 	}
 
 	return &Aggregator{
@@ -34,8 +48,23 @@ func NewAggregator(quoters []quoter.Quoter, segmentPercentage int64) *Aggregator
 		segmentPercent: segmentPercentage,
 		quoteCache:     quoteCache,
 		cacheMutex:     sync.Mutex{},
+		breakers:       breakers,
 		Loggable:       utils.Loggable{ModuleName: "aggregator"},
 	}
+}
+
+func (a *Aggregator) executeWithBreaker(quoterName string, operation func() error) error {
+	breaker, exists := a.breakers[quoterName]
+	if !exists {
+		return fmt.Errorf("no circuit breaker found for quoter: %s", quoterName)
+	}
+
+	_, err := breaker.Execute(func() (interface{}, error) {
+		err := operation()
+		return nil, err
+	})
+
+	return err
 }
 
 // splitAmount splits the input amount into segments based on segmentPercent
@@ -140,15 +169,25 @@ func (a *Aggregator) preQuoteAndCache(
 			go func(quoter quoter.Quoter, amountToQuery string) {
 				defer wg.Done()
 
-				quote, err := quoter.ExactIn(fromToken, toToken, amountToQuery, requestId, nil, userAddress)
-				if err == nil && quote != nil && quote.Prices[amountToQuery] != "" {
+				err := a.executeWithBreaker(quoterName, func() error {
+					quote, err := quoter.ExactIn(fromToken, toToken, amountToQuery, requestId, nil, userAddress)
+					if err != nil {
+						return err
+					}
+					if quote == nil || quote.Prices[amountToQuery] == "" {
+						return fmt.Errorf("invalid quote response")
+					}
+
 					a.addQuoteToCache(quoterName, amountToQuery, quote)
 					a.Info("cache: preQuote success",
 						"requestId", requestId,
 						"quoter", quoterName,
 						"amount", amountToQuery,
 						"price", quote.Prices[amountToQuery])
-				} else {
+					return nil
+				})
+
+				if err != nil {
 					a.Error("cache: preQuote failed",
 						"requestId", requestId,
 						"quoter", quoterName,
@@ -219,30 +258,41 @@ func (a *Aggregator) processQuoter(
 	protocol := q.String()
 	currentAmountInStr := currentAmountIn.String()
 
-	quote := a.getQuoteFromCacheWithLogging(protocol, currentAmountInStr)
-	if quote == nil {
-		resultChan <- quoter.QuoteResult{Quoter: q, Quote: nil, SegmentOutput: nil, Err: fmt.Errorf("cache miss")}
-		return
-	}
+	var result quoter.QuoteResult
+	err := a.executeWithBreaker(protocol, func() error {
+		quote := a.getQuoteFromCacheWithLogging(protocol, currentAmountInStr)
+		if quote == nil {
+			return fmt.Errorf("cache miss")
+		}
 
-	state.LastQuote = quote
-	state.LastQuoteAmount = currentAmountIn
+		state.LastQuote = quote
+		state.LastQuoteAmount = currentAmountIn
+		currentTotalOutput, err := a.parseQuotePrice(quote, protocol, currentAmountInStr)
+		if err != nil {
+			return err
+		}
 
-	currentTotalOutput, err := a.parseQuotePrice(quote, protocol, currentAmountInStr)
+		currentSegmentOutput := a.calculateSegmentOutput(currentTotalOutput, state)
+		a.logQuoteResult(protocol, state, currentAmountInStr, currentTotalOutput, currentSegmentOutput)
+		result = quoter.QuoteResult{
+			Quoter:        q,
+			Quote:         quote,
+			SegmentOutput: currentSegmentOutput,
+			Err:           nil,
+		}
+		return nil
+	})
+
 	if err != nil {
-		resultChan <- quoter.QuoteResult{Quoter: q, Quote: nil, SegmentOutput: nil, Err: err}
-		return
+		result = quoter.QuoteResult{
+			Quoter:        q,
+			Quote:         nil,
+			SegmentOutput: nil,
+			Err:           err,
+		}
 	}
 
-	currentSegmentOutput := a.calculateSegmentOutput(currentTotalOutput, state)
-	a.logQuoteResult(protocol, state, currentAmountInStr, currentTotalOutput, currentSegmentOutput)
-
-	resultChan <- quoter.QuoteResult{
-		Quoter:        q,
-		Quote:         quote,
-		SegmentOutput: currentSegmentOutput,
-		Err:           nil,
-	}
+	resultChan <- result
 }
 
 func (a *Aggregator) GetQuote(
@@ -372,9 +422,9 @@ func (a *Aggregator) GetQuote(
 		segmentDetail := map[string]interface{}{
 			"protocol":       bestProtocol,
 			"amountIn":       actualSegmentAmount.String(),
-			"amountOut":      bestSegmentOutput.Text('f', 0),
+			"amountOut":      bestSegmentOutput.String(),
 			"totalAmountIn":  state.AccumulatedAmountIn.String(),
-			"totalAmountOut": state.AccumulatedAmountOut.Text('f', 0),
+			"totalAmountOut": state.AccumulatedAmountOut.String(),
 			"calldata":       hexutil.Encode(bestQuoteResult.Calldata),
 			"routes":         bestQuoteResult.Routes,
 			"to":             bestQuoteResult.To,
@@ -390,7 +440,7 @@ func (a *Aggregator) GetQuote(
 			"requestId", requestId,
 			"activeQuoter", bestProtocol,
 			"segmentAmountIn", actualSegmentAmount.String(),
-			"segmentAmountOut", bestSegmentOutput.Text('f', 0),
+			"segmentAmountOut", bestSegmentOutput.String(),
 			"remainingAmount", remainingAmount.String())
 	}
 
@@ -442,7 +492,7 @@ func (a *Aggregator) GetQuote(
 			}
 		}
 
-		segmentAmountOut, _ := new(big.Float).SetString(segment["totalAmountOut"].(string))
+		segmentAmountOut, _ := new(big.Float).SetString(segment["amountOut"].(string))
 		totalAmountOut = new(big.Float).Add(totalAmountOut, segmentAmountOut)
 
 		settlement := map[string]interface{}{

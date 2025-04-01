@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -66,9 +67,18 @@ func (u *SushiSwapV3) ExactIn(
 	}
 	quoterContract, _ := uniswap_v3.NewQuoterV3(u.quoterAddress, client)
 
-	result, err := quoterContract.QuoteExactInputSingle(&bind.CallOpts{}, params)
+	var result commons.QuoteExactInputResponse
+	err = retry.Do(
+		func() error {
+			var err error
+			result, err = quoterContract.QuoteExactInputSingle(&bind.CallOpts{}, params)
+			return err
+		},
+		retry.Attempts(1),
+		retry.Delay(100*time.Millisecond),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get quote: %w", err)
+		return nil, fmt.Errorf("failed to get quote after retries: %w", err)
 	}
 
 	deadline := big.NewInt(time.Now().Add(30 * time.Second).Unix())

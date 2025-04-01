@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"go.uber.org/ratelimit"
@@ -48,9 +49,18 @@ func (b *BebopQuoter) ExactIn(
 	}
 
 	b.limiter.Take()
-	response, err := b.client.GetQuote(quoteRequest)
+	var response *clients.BebopQuoteResponse
+	err := retry.Do(
+		func() error {
+			var err error
+			response, err = b.client.GetQuote(quoteRequest)
+			return err
+		},
+		retry.Attempts(1),
+		retry.Delay(100*time.Millisecond),
+	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get quote after retries: %w", err)
 	}
 
 	outputAmountWei := new(big.Int)

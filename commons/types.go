@@ -43,3 +43,10 @@ type Route struct {
 	TotalAmountIn  string
 	TotalAmountOut string
 }
+
+type QuoteExactInputResponse struct {
+	AmountReceived          *big.Int
+	SqrtPriceX96After       *big.Int
+	InitializedTicksCrossed uint32
+	GasEstimate             *big.Int
+}
